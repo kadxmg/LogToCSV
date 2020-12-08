@@ -40,7 +40,7 @@ Log_Parser_UNISOC = Log_Parser_Template(
     # 5A245 <6> [27634.217721][12-02 20:18:22.217] charger-manager charger-manager: battery voltage = 3411000, OCV = 3536769, current = -1113000, capacity = 10, charger status = 2, force set full = 0, charging current = 0, charging limit current = 0, battery temperature = 513,board temperature = 583, track state = 1, charger type = 2, thm_adjust_cur = -22, charger input voltage = 0
     keyword_line_regular='.* charger-manager charger-manager:(.*)$',
     keyword_head_regulart='.* charger-manager charger-manager: battery voltage = (.*)$',
-    keyword_field_regulart='(.+?) = (.+?),',
+    keyword_field_regulart='(.+?)=(.+?),',
     keyword_field_split=',',
     keyword_time_regulart='^.*?\[.*\]\[(.*)\] ',
 )
@@ -81,9 +81,12 @@ class CsvItem:
                          ",".join(list(CsvItem.head_keyword_keypairs.keys())),
                          "file",
                          "line_number", ])
-    def add_keyword_keypairs(self,key,value):
-        CsvItem.head_keyword_keypairs[key] = ''
-        self.keyword_keypairs[key] = value
+
+    @staticmethod
+    def update_head_keyword_keypairs(keys):
+        for key in keys:
+            if key not in CsvItem.head_keyword_keypairs:
+                CsvItem.head_keyword_keypairs[key] = ''
 
     def get_csv_head_vales(self):
         values = ""
@@ -132,10 +135,9 @@ def process_log_line(line, keyword_time_regulart, keyword_line_regular, keyword_
             print("items_match_obj:", item_matchObj)
             key = item_matchObj[0].strip()
             value = item_matchObj[1].strip()
-            print("items_match_obj:", key, ":", value)
-            # item.keyword_keypairs[key] = value
-            # some more thing is do in function
-            item.add_keyword_keypairs(key, value)
+            if debug_verbose:
+                print("items_match_obj:", key, ":", value)
+            item.keyword_keypairs[key] = value
         return item
     else:
         return None
@@ -186,12 +188,14 @@ def process_log_file(log_file_path, csv_items, praser):
                 if debug:
                     item.dump()
                 csv_items.append(item)
+                CsvItem.update_head_keyword_keypairs(item.keyword_keypairs.keys())
                 last_head_item = item
                 print("item:", item_number)
                 item_number = item_number + 1
-            else:
+            elif len(item.keyword_keypairs) > 0:
                 if last_head_item is not None:
                     last_head_item.keyword_keypairs.update(item.keyword_keypairs)
+                    CsvItem.update_head_keyword_keypairs(item.keyword_keypairs.keys())
                     print("merge to last item:", item.keyword_keypairs)
                 else:
                     print("unable merge ，drop one item:", item.keyword_keypairs)
@@ -229,32 +233,66 @@ def filter_file_names(file_name, file_name_regular):
     else:
         return True
 
-
-def process_log_dir(praser, dir_name):
+def find_log_files_in_dir(praser, dir_name):
     log_files = []
-    csv_items = []
-
     try:
-        work_dir_files = os.listdir(dir_name)
+        files = os.listdir(dir_name)
     except IOError as reason:
         print('工作文件夹打开失败！' + str(reason))
-        return
-    while work_dir_files:
-        file_name = work_dir_files.pop()
+    while files:
+        file_name = files.pop()
         if filter_file_names(file_name, praser.file_name_regular):
             log_files.append(file_name)
 
     log_files.sort(key=praser.file_name_sort_lambda)
+    return log_files
+
+def process_work_dir(praser, work_dir_name):
+    output_path = process_log_dir(praser, work_dir_name)
+    if output_path is None:
+        print('当前文件夹没有找到Log，尝试遍历子文件夹')
+        output_dir = work_dir_name + "\\" + "battery"
+        if not os.path.exists(output_dir):
+            os.mkdir(output_dir)
+        try:
+            subdirs = os.listdir(work_dir_name)
+        except IOError as reason:
+            print('工作文件夹打开失败！' + str(reason))
+        save_count = 0
+        while subdirs:
+            file_name = subdirs.pop()
+            file_path = work_dir_name + "\\" + file_name
+            if os.path.isdir(file_path):
+                if process_log_dir(praser, file_path, output_dir) is not None:
+                    output_path = output_dir # at least one file create
+
+    if output_path is not None:
+        os.system('start ' + output_path)
+
+def process_log_dir(praser, dir_name, output_dir = None):
+    csv_items = []
+    CsvItem.head_keyword_keypairs = {}
+    log_dir = dir_name
+    output_filename = praser.file_name_output
+    if output_dir is not None:
+        output_filename = os.path.basename(dir_name) + ".csv"
+    else:
+        output_dir = log_dir
+
+    log_files = find_log_files_in_dir(praser, log_dir)
+
     for file_name in log_files:
-        path = dir_name + "\\" + file_name
+        path = log_dir + "\\" + file_name
         if debug:
             print('处理 Log 文件 ', path)
         process_log_file(path, csv_items, praser)
 
-    output_path = work_dir + "\\" + praser.file_name_output
-    save_csv(output_path, csv_items)
-    os.system('start ' + output_path)
+    output_path = output_dir + "\\" + output_filename
+    if len(csv_items) > 0:
+        save_csv(output_path, csv_items)
+        return output_path
 
+    return None
 
 # 按间距中的绿色按钮以运行脚本。
 if __name__ == '__main__':
@@ -269,7 +307,7 @@ if __name__ == '__main__':
     start = time.time()
 
     for praser in Log_Parsers:
-        process_log_dir(praser, work_dir)
+        process_work_dir(praser, work_dir)
 
     end = time.time()
     print("耗时（秒）：", int(end - start))
